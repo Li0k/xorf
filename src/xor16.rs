@@ -89,6 +89,7 @@ pub struct Xor16Ref<'a> {
 }
 
 impl Filter<u64> for Xor16Ref<'_> {
+    #[inline]
     fn contains(&self, key: &u64) -> bool {
         xor_contains_impl!(*key, self, fingerprint u16)
     }
