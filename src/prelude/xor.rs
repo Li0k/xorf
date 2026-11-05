@@ -32,6 +32,9 @@ macro_rules! xor_h(
 #[macro_export]
 macro_rules! xor_contains_impl(
     ($key:expr, $self:expr, fingerprint $fpty:ty) => {
+        $crate::xor_contains_impl!($key, $self, fingerprint $fpty, |index| $self.fingerprints[index])
+    };
+    ($key:expr, $self:expr, fingerprint $fpty:ty, $read:expr) => {
         {
             use $crate::prelude::HashSet;
 
@@ -40,10 +43,11 @@ macro_rules! xor_contains_impl(
                 hset: [h0, h1, h2],
             } = HashSet::xor_from($key, $self.block_length, $self.seed);
             let fp = $crate::fingerprint!(hash) as $fpty;
+            let read = $read;
 
-            fp == $self.fingerprints[h0]
-                ^ $self.fingerprints[(h1 + $self.block_length)]
-                ^ $self.fingerprints[(h2 + 2 * $self.block_length)]
+            fp == read(h0)
+                ^ read(h1 + $self.block_length)
+                ^ read(h2 + 2 * $self.block_length)
         }
     };
  );

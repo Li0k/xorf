@@ -99,6 +99,33 @@ impl Filter<u64> for Xor16Ref<'_> {
     }
 }
 
+/// A borrowed [`Xor16`] backed by little-endian fingerprint bytes.
+///
+/// The byte pairs require no alignment. The seed, block length and fingerprints
+/// must come from the same filter.
+#[derive(Debug, Clone, Copy)]
+pub struct Xor16BytesRef<'a> {
+    /// The seed for the filter.
+    pub seed: u64,
+    /// The length of each of the filter's three fingerprint blocks.
+    pub block_length: usize,
+    /// Little-endian fingerprints, indexed in elements rather than bytes.
+    pub fingerprints: &'a [[u8; 2]],
+}
+
+impl Filter<u64> for Xor16BytesRef<'_> {
+    #[inline]
+    fn contains(&self, key: &u64) -> bool {
+        xor_contains_impl!(*key, self, fingerprint u16, |index| {
+            u16::from_le_bytes(self.fingerprints[index])
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.fingerprints.len()
+    }
+}
+
 impl Xor16 {
     /// Construct the filter from a key iterator. Can be used directly
     /// if you don't have a contiguous array of u64 keys.
@@ -134,10 +161,41 @@ impl From<Vec<u64>> for Xor16 {
 
 #[cfg(test)]
 mod test {
-    use crate::{Filter, Xor16};
+    extern crate std;
+
+    use crate::{Filter, Xor16, Xor16BytesRef};
 
     use alloc::vec::Vec;
     use rand::Rng;
+
+    #[test]
+    fn test_byte_reader() {
+        let keys: Vec<u64> = (0..128).map(|key| key * 7919).collect();
+        let owned = Xor16::from(&keys);
+        let fingerprints: Vec<_> = owned
+            .fingerprints
+            .iter()
+            .map(|fp| fp.to_le_bytes())
+            .collect();
+        let reader = Xor16BytesRef {
+            seed: owned.seed,
+            block_length: owned.block_length,
+            fingerprints: &fingerprints,
+        };
+        assert_eq!(reader.len(), owned.len());
+        for key in keys.iter().copied().chain(0..4096) {
+            assert_eq!(reader.contains(&key), owned.contains(&key));
+        }
+
+        // The third probe must not read beyond the supplied child slice.
+        let bytes = [[0, 0]; 3];
+        let truncated = Xor16BytesRef {
+            seed: 0,
+            block_length: 1,
+            fingerprints: &bytes[..2],
+        };
+        assert!(std::panic::catch_unwind(|| truncated.contains(&42)).is_err());
+    }
 
     #[test]
     fn test_initialization() {
