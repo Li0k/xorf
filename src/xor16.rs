@@ -113,6 +113,43 @@ pub struct Xor16BytesRef<'a> {
     pub fingerprints: &'a [[u8; 2]],
 }
 
+impl<'a> Xor16BytesRef<'a> {
+    /// Borrows a filter encoded as a little-endian `u64` seed, `u32` block length,
+    /// and little-endian `u16` fingerprints, without copying or requiring alignment.
+    ///
+    /// Returns `None` for an incomplete header or fingerprint. This checks the byte layout,
+    /// not whether the fingerprints describe a valid filter. Only query trusted encodings.
+    #[inline]
+    pub fn from_encoded_le(data: &'a [u8]) -> Option<Self> {
+        let header = data.get(..12)?;
+        let (fingerprints, remainder) = data[12..].as_chunks::<2>();
+        if !remainder.is_empty() {
+            return None;
+        }
+        Some(Self {
+            seed: u64::from_le_bytes(header[..8].try_into().unwrap()),
+            block_length: u32::from_le_bytes(header[8..].try_into().unwrap()) as usize,
+            fingerprints,
+        })
+    }
+}
+
+impl From<Xor16BytesRef<'_>> for Xor16 {
+    fn from(filter: Xor16BytesRef<'_>) -> Self {
+        Self {
+            seed: filter.seed,
+            block_length: filter.block_length,
+            fingerprints: filter
+                .fingerprints
+                .iter()
+                .copied()
+                .map(u16::from_le_bytes)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        }
+    }
+}
+
 impl Filter<u64> for Xor16BytesRef<'_> {
     #[inline]
     fn contains(&self, key: &u64) -> bool {
@@ -127,6 +164,25 @@ impl Filter<u64> for Xor16BytesRef<'_> {
 }
 
 impl Xor16 {
+    /// Returns the byte length of the encoding written by [`Self::encode_le_into`].
+    pub fn encoded_le_len(&self) -> usize {
+        12 + self.fingerprints.len() * 2
+    }
+
+    /// Appends the portable encoding accepted by [`Xor16BytesRef::from_encoded_le`].
+    ///
+    /// # Panics
+    /// Panics if the block length does not fit in a `u32`.
+    pub fn encode_le_into(&self, out: &mut Vec<u8>) {
+        let block_length = u32::try_from(self.block_length).expect("block length exceeds u32");
+        out.reserve(self.encoded_le_len());
+        out.extend_from_slice(&self.seed.to_le_bytes());
+        out.extend_from_slice(&block_length.to_le_bytes());
+        for fingerprint in self.fingerprints.iter() {
+            out.extend_from_slice(&fingerprint.to_le_bytes());
+        }
+    }
+
     /// Construct the filter from a key iterator. Can be used directly
     /// if you don't have a contiguous array of u64 keys.
     ///
@@ -172,20 +228,26 @@ mod test {
     fn test_byte_reader() {
         let keys: Vec<u64> = (0..128).map(|key| key * 7919).collect();
         let owned = Xor16::from(&keys);
-        let fingerprints: Vec<_> = owned
+        let mut bytes = alloc::vec![0];
+        owned.encode_le_into(&mut bytes);
+        assert_eq!(bytes.len() - 1, owned.encoded_le_len());
+        assert_eq!(&bytes[1..9], &owned.seed.to_le_bytes());
+        assert_eq!(&bytes[9..13], &(owned.block_length as u32).to_le_bytes());
+        let expected: Vec<_> = owned
             .fingerprints
             .iter()
-            .map(|fp| fp.to_le_bytes())
+            .flat_map(|fp| fp.to_le_bytes())
             .collect();
-        let reader = Xor16BytesRef {
-            seed: owned.seed,
-            block_length: owned.block_length,
-            fingerprints: &fingerprints,
-        };
+        assert_eq!(&bytes[13..], expected);
+        let reader = Xor16BytesRef::from_encoded_le(&bytes[1..]).unwrap();
         assert_eq!(reader.len(), owned.len());
+        let restored = Xor16::from(reader);
         for key in keys.iter().copied().chain(0..4096) {
             assert_eq!(reader.contains(&key), owned.contains(&key));
+            assert_eq!(restored.contains(&key), owned.contains(&key));
         }
+        assert!(Xor16BytesRef::from_encoded_le(&bytes[1..12]).is_none());
+        assert!(Xor16BytesRef::from_encoded_le(&bytes[1..bytes.len() - 1]).is_none());
 
         // The third probe must not read beyond the supplied child slice.
         let bytes = [[0, 0]; 3];

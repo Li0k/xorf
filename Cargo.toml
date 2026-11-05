@@ -6,6 +6,7 @@ Library implementing xor filters - faster and smaller than bloom and cuckoo filt
 """
 documentation = "https://docs.rs/xorf"
 edition = "2021"
+rust-version = "1.88"
 homepage = "https://github.com/ayazhafiz/xorf"
 keywords = ["xor", "filter", "hash", "hashing"]
 license = "MIT"
